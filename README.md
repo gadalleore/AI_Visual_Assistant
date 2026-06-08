@@ -160,7 +160,8 @@ The tool is designed to never let screenshot folders grow without bound:
 
 - **When a watcher is running** (`--fast`, `--realtime`, or plain): uses the configured `--max-age` / `--max-keep` (defaults 5 min / 5 files in normal mode; more generous in follow mode).
 - **Opportunistic cleanup on every capture**: even one-shot commands (`--once`, `follow grab`, `follow live`, etc.) trigger a loose safety cleanup (4 hours or 300 files by default). This prevents accumulation if you mostly use grab/live without a long-running watcher.
-- **Recent ring buffer** (`recent/frame_*.png`): self-trims to ~60 frames on every write.
+- **Burst grab keeps ONLY the current batch** (privacy + disk): each `follow grab` deletes the *previous* burst's frames — it trims the recent ring to just the new burst and wipes the raw `screen_*.png` captures. At any moment only ~the latest batch (current.png + the burst + their stable grab copies) is on disk; the prior five are gone the instant you grab again.
+- **Recent ring buffer** (`recent/frame_*.png`): when a continuous watcher is running it self-trims to ~60 frames; on-demand burst grabs trim it to just the current burst.
 - **`grab/` stable snapshots**: the watcher deliberately does *not* touch grab/ (so the AI has stable files), but `follow grab` itself automatically prunes old `grab/recent/` frames and very old grab files after each new snapshot (keeps ~150 recent frames + 2-day age by default). Repeated AI use of "follow grab" will no longer cause the folder to balloon.
 - Full manual wipe: `py screen_watcher.py follow cleanup` (or `--cleanup`).
 

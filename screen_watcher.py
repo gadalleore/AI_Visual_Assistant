@@ -444,6 +444,21 @@ def grab_stable_snapshot(num_recent: int = 20, fresh_capture: bool = True,
             except Exception:
                 pass
 
+    # Privacy + disk hygiene for on-demand burst grabs: keep ONLY the current
+    # batch on disk. Each new grab deletes the PREVIOUS burst's frames - both the
+    # recent/ ring and the raw timestamped captures in the main folder. (Skipped
+    # for the ring-based path so a running --fast watcher keeps its motion history.)
+    if burst_frames:
+        keep = len(burst_frames)
+        try:
+            cleanup_recent(keep)     # recent/ ring -> just this burst
+        except Exception:
+            pass
+        try:
+            prune_screenshots(0)     # drop all raw screen_*.png (pinned copies remain in grab/)
+        except Exception:
+            pass
+
     # Self-prune the grab area so it doesn't grow without bound across many
     # "follow grab" invocations (the main source of "folder balloons to infinity").
     # We keep a comfortable amount of history for the just-created stable snapshot
@@ -473,6 +488,24 @@ def cleanup_recent(max_files: int = 0) -> int:
             for f in frames:
                 f.unlink(missing_ok=True)
                 deleted += 1
+    except Exception:
+        pass
+    return deleted
+
+
+def prune_screenshots(keep_newest: int = 0) -> int:
+    """Delete raw timestamped screen_*.png from the main folder, keeping only the
+    newest `keep_newest` (0 = delete all). Never touches current.png or grab/.
+
+    Used after a burst grab to keep ONLY the current batch on disk (privacy + disk).
+    """
+    deleted = 0
+    try:
+        files = sorted(SCREENSHOTS_DIR.glob("screen_*.png"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files[max(0, keep_newest):]:
+            p.unlink(missing_ok=True)
+            deleted += 1
     except Exception:
         pass
     return deleted
