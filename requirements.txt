@@ -1,0 +1,5 @@
+Pillow>=10.0
+
+# Strongly recommended for Follow Mode (mouse circling / real-time):
+# mss is ~5x faster than PIL.ImageGrab for repeated captures (~100ms vs ~480ms)
+mss>=9.0.1   # pip install mss   (or uncomment and use this file)

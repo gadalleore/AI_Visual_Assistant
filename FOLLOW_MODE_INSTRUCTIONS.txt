@@ -1,0 +1,175 @@
+FOLLOW MODE — Screen following for AI assistants (Grok, Claude, etc.)
+==========================================================================
+
+Magic phrases (say these to your AI in chat):
+
+    "Follow Mode On"
+    "Follow Mode Off"
+
+What "Follow Mode On" does
+--------------------------
+- Sets a persistent flag (follow_mode.txt)
+- The AI can then launch (or you can manually start) a fast background capture process.
+- Two main things are kept fresh on disk:
+
+    screenshots/current.png
+        Always the absolute latest full desktop. Best for "what am I looking at right now?"
+
+    screenshots/recent/frame_*.png
+        A rotating ring buffer of recent moments (now much larger by default — ~35-60 seconds
+        of history at fast intervals). Lets the AI reconstruct short gestures, mouse movement,
+        sequences of clicks, etc.
+
+**Important safety feature (new):**
+Follow Mode will **automatically turn itself off after 60 minutes** of continuous use.
+This prevents accidentally leaving it running for a very long time. If it auto-disables,
+you (or the AI) can simply say "Follow Mode On" again.
+
+How to start the watcher (do this after saying Follow Mode On)
+--------------------------------------------------------------
+In PowerShell, from the project folder:
+
+    py screen_watcher.py --fast
+    # or for the tightest following:
+    py screen_watcher.py --realtime
+
+These presets now use:
+- Faster capture (~0.4–0.65s)
+- Much larger recent buffer (60 frames by default)
+- Longer history retention (5 minutes) so the AI has more context to work with
+
+The BEST command for any AI to actually look (Grok or Claude)
+-------------------------------------------------------------
+    py screen_watcher.py follow grab
+
+This is the key improvement:
+
+- It does a fresh capture.
+- It copies current.png + a generous number of recent frames into a **stable** location:
+    screenshots/grab/current.png
+    screenshots/grab/recent/frame_*.png
+- These files are **not** rotated or deleted by the normal watcher cleanup.
+- The command prints the exact list of paths.
+- The AI then calls its vision / read_file tool on those stable paths.
+
+This completely solves the previous problem where frames could disappear between the AI
+asking for the list and actually reading the images.
+
+Recommended AI usage pattern (works for both Grok and Claude):
+  AI runs:  py screen_watcher.py follow grab
+  AI then reads the printed paths (especially grab/current.png and several from grab/recent/)
+  AI describes exactly what is on screen + any recent motion.
+
+You can also pass --json:
+  py screen_watcher.py follow grab --json
+  py screen_watcher.py follow status --json
+  py screen_watcher.py follow stream --json
+
+This makes the output easy for agents to parse programmatically.
+
+Convenience / agent commands
+----------------------------
+    py screen_watcher.py follow status          # current state + how long it has been on + auto-off timer
+    py screen_watcher.py follow grab            # ← PRIMARY command for reliable AI observation
+    py screen_watcher.py follow stream          # quick raw list (use grab instead when possible)
+    py screen_watcher.py follow live / observe  # one fresh capture + paths
+    py screen_watcher.py follow latest
+    py screen_watcher.py follow on / off
+    py screen_watcher.py follow cleanup         # wipe everything (including old grabs)
+    py screen_watcher.py follow instructions
+
+    py screen_watcher.py --fast
+    py screen_watcher.py --realtime
+
+How the AI actually "watches"
+-----------------------------
+1. You (or the AI) start the watcher with --fast or --realtime while Follow Mode is on.
+2. When you want the AI to look at your screen (or the AI decides to look), the AI runs:
+       py screen_watcher.py follow grab
+3. The AI receives a list of stable local PNG paths.
+4. The AI calls its vision tool (read_file, etc.) on those paths — multiple in parallel if desired.
+5. The AI now has pixel-perfect understanding of your current desktop + recent motion.
+
+Nothing is ever uploaded to the cloud. Everything stays on your machine.
+
+Performance & disk (improved)
+-----------------------------
+- With mss (recommended): very fast captures (~90-110 ms each).
+- Default recent buffer is now ~60 frames (much more forgiving for the AI).
+- --fast / --realtime keep ~5 minutes of full history instead of the old ~90 seconds.
+- The ring buffer still rotates, but `follow grab` gives the AI a safe snapshot before rotation can hurt.
+
+Tips for best results
+---------------------
+- Use --realtime when you want the AI to follow very fine mouse movements or rapid UI changes.
+- Use --fast for a good balance (lower CPU/disk).
+- After doing something visual, say "look at what I just did" or "what am I hovering over?" etc.
+- For best gesture reconstruction: "watch the last few seconds" → AI will grab + read many recent frames.
+- Tell the AI to use `follow grab` (not just stream) when you want confident, multi-frame analysis.
+
+1-hour auto-off safety
+----------------------
+- If Follow Mode stays on longer than 60 minutes it will automatically clear the flag.
+- The running watcher will notice on its next cycle and shut down gracefully.
+- This is intentional. Long-running visual following should be deliberate.
+- You can always re-enable it instantly.
+
+Claude (and other AI agents) support
+------------------------------------
+This tool is no longer Grok-only.
+
+Any agent that can:
+- Run local shell commands (`py screen_watcher.py follow ...`)
+- Read local image files (PNG) with its vision capabilities
+
+...can use the exact same interface.
+
+Recommended contract for Claude / Cursor / etc.:
+
+1. User (or agent) says "Follow Mode On"
+2. Agent runs: py screen_watcher.py --fast   (or --realtime)
+3. When the agent wants to see the screen:
+       py screen_watcher.py follow grab --json     # or without --json
+4. Agent parses the output (or just takes the printed paths)
+5. Agent reads the stable grab/ paths with its file/vision tool
+6. Agent answers with full visual context
+
+The `grab` command + stable `screenshots/grab/` directory is the reliable primitive
+that works across different AI tool ecosystems.
+
+You can also give Claude the `follow instructions` output or point it at this file.
+
+Turning everything off cleanly
+------------------------------
+Best: say "Follow Mode Off" to your AI.
+
+The AI will:
+- Clear the flag (which also clears the 1-hour timer)
+- Stop any background task it launched
+- (Optional) run `follow cleanup` if you want to erase the last visual history
+
+You can also just Ctrl+C any terminal running the watcher.
+
+Privacy (still very important)
+------------------------------
+Follow Mode lets the AI look over your shoulder in near real-time.
+Only use it for things you are comfortable having an AI see.
+
+Turn it off (or pause) before passwords, banking, personal email, medical docs, etc.
+
+Files location (outside the project)
+------------------------------------
+C:\Users\gdall\.ai-visual-assistant\
+    follow_mode.txt
+    follow_mode_started.txt          ← used for the 1-hour auto-off
+    screenshots/current.png
+    screenshots/recent/              ← rotating ring (now larger)
+    screenshots/grab/                ← stable snapshots created by "follow grab" (safe for AI)
+
+Getting this file again
+-----------------------
+    py screen_watcher.py follow instructions
+
+That's it. Say "Follow Mode On", start --fast or --realtime, and have your AI use `follow grab`
+when it needs to look at your screen with confidence.
+
