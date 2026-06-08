@@ -11,9 +11,11 @@ Screenshots are written to your local disk only. You are always in control. Noth
 
 - **Follow Mode** for real-time visual collaboration (mouse gestures, UI state, debugging, etc.)
 - Stable `follow grab` snapshots so AIs can reliably read images without race conditions with rotation
+- Grab area is self-pruning — repeated grabs will not cause unbounded growth
 - 1-hour automatic safety timeout for Follow Mode
+- Resilient capture: automatic runtime fallback from the fast `mss` backend to PIL, plus watcher recovery from transient display/driver glitches (won't just die)
+- Automatic bounded garbage collection (main screenshots + recent ring + stable grab snapshots) so your `~/.ai-visual-assistant` folder stays under control even with heavy one-shot or AI-driven use
 - Works with Grok, Claude, and other agents that can run shell commands + read local images
-- Automatic cleanup for privacy
 - Windows-friendly starters + cross-platform Python core
 
 ## Installation
@@ -128,7 +130,7 @@ py screen_watcher.py --open-dir      # open the screenshots folder
 py screen_watcher.py --cleanup       # manual cleanup
 py screen_watcher.py follow status
 py screen_watcher.py follow stream   # print current + recent paths for the AI
-py screen_watcher.py follow grab     # BEST: create stable snapshot for AI
+py screen_watcher.py follow grab     # BEST: create stable (self-pruning) snapshot for AI
 py screen_watcher.py follow instructions
 ```
 
@@ -145,19 +147,24 @@ Contents:
 - `current.png` — always the latest full capture (overwritten each time)
 - `screen_YYYYMMDD_HHMMSS.png` — timestamped full captures
 - `recent/frame_*.png` — short ring buffer of recent moments (for motion)
-- `grab/` — stable copies created by `follow grab` (safe for AI vision tools)
+- `grab/` — stable copies created by `follow grab` (safe for AI vision tools; automatically pruned on each new grab to stay bounded)
 - `follow_mode.txt` + `follow_mode_started.txt` — state for Follow Mode + 1h safety timer
 
 This design keeps your personal data out of version control.
 
 ## Auto cleanup (important for privacy)
 
-- By default: screenshots older than **5 minutes** are deleted on the next capture.
-- It also never keeps more than the **5 most recent** files.
-- You can change this with `--max-age` and `--max-keep`.
-- After a session you can force cleanup with `--cleanup`.
+The tool is designed to never let screenshot folders grow without bound:
 
-This means after I look at your screen and we finish talking, the evidence disappears automatically.
+- **When a watcher is running** (`--fast`, `--realtime`, or plain): uses the configured `--max-age` / `--max-keep` (defaults 5 min / 5 files in normal mode; more generous in follow mode).
+- **Opportunistic cleanup on every capture**: even one-shot commands (`--once`, `follow grab`, `follow live`, etc.) trigger a loose safety cleanup (4 hours or 300 files by default). This prevents accumulation if you mostly use grab/live without a long-running watcher.
+- **Recent ring buffer** (`recent/frame_*.png`): self-trims to ~60 frames on every write.
+- **`grab/` stable snapshots**: the watcher deliberately does *not* touch grab/ (so the AI has stable files), but `follow grab` itself automatically prunes old `grab/recent/` frames and very old grab files after each new snapshot (keeps ~150 recent frames + 2-day age by default). Repeated AI use of "follow grab" will no longer cause the folder to balloon.
+- Full manual wipe: `py screen_watcher.py follow cleanup` (or `--cleanup`).
+
+You can still tune the live watcher behavior with `--max-age` / `--max-keep`. After any session you can force a total cleanup.
+
+This means after I look at your screen and we finish talking, the evidence disappears automatically — and long-term usage stays tidy.
 
 ## Follow Mode (real-time visual following)
 

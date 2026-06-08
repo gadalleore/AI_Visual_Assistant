@@ -27,6 +27,11 @@ Primary recommended flow for any AI:
 Safety: Follow mode **automatically turns itself off after 60 minutes** of continuous use.
 You can always turn it back on.
 
+Reliability: Capture is resilient (safe monitor selection + mss→PIL fallback at runtime).
+The watcher recovers from transient capture failures instead of dying. Automatic bounded
+garbage collection (including for stable grab/ snapshots) prevents folders from growing
+unbounded even under heavy one-shot or AI-driven usage.
+
 Fast presets:
     py screen_watcher.py --fast
     py screen_watcher.py --realtime
@@ -45,13 +50,16 @@ See: py screen_watcher.py follow instructions   (or read FOLLOW_MODE_INSTRUCTION
 === Why "grab" exists ===
 The rotating recent/ ring buffer is great for low disk use, but frames can disappear
 between an AI listing paths and actually reading the images.
-`follow grab` copies the current state into a stable `grab/` directory that the watcher
-does not clean. Perfect for confident, multi-frame observation by Grok or Claude.
+`follow grab` copies the current state into a stable `grab/` directory (the background
+watcher does not clean it). Grab is self-managing: it automatically prunes old artifacts
+on each new grab so the folder stays bounded even with heavy use.
 
 Privacy: Only use when comfortable. Everything is local and short-lived by default.
 """
 
 from __future__ import annotations
+
+__version__ = "0.2.0"
 
 import argparse
 import shutil
@@ -170,31 +178,73 @@ def enforce_follow_timeout() -> bool:
 
 
 def capture_screenshot() -> Path:
-    """Capture the screen (prefers fast mss backend when available). Returns path to the new timestamped file."""
+    """Capture the screen (prefers fast mss backend when available). Returns path to the new timestamped file.
+
+    Resilient: safe monitor selection, runtime fallback from mss to PIL.ImageGrab,
+    and best-effort but warned update of current.png. A single transient failure
+    should not kill a running watcher.
+    """
     ensure_dirs()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"screen_{timestamp}.png"
     filepath = SCREENSHOTS_DIR / filename
 
-    if _HAS_MSS:
-        # Much faster (~5x) — ideal for follow mode / mouse tracking
-        with mss.MSS() as sct:
-            mon = sct.monitors[1]  # primary monitor (good balance; full virtual is sct.monitors[0])
-            sct_img = sct.grab(mon)
-            mss.tools.to_png(sct_img.rgb, sct_img.size, output=str(filepath))
-    else:
-        im = ImageGrab.grab()
-        im.save(filepath, "PNG")
+    last_err: Exception | None = None
+    captured = False
 
-    # Always keep an easy "current.png" (overwritten every capture). This is the main live view.
+    # Prefer mss (fast path) but be defensive at runtime even if the import succeeded.
+    if _HAS_MSS:
+        try:
+            with mss.MSS() as sct:
+                mons = sct.monitors
+                # Safe selection: monitors[0] is the virtual "all monitors" desktop.
+                # monitors[1] is usually the primary. Fall back gracefully.
+                mon = mons[1] if len(mons) > 1 else mons[0]
+                sct_img = sct.grab(mon)
+                mss.tools.to_png(sct_img.rgb, sct_img.size, output=str(filepath))
+            captured = True
+        except Exception as e:
+            last_err = e
+            # Fall through to PIL fallback
+
+    if not captured:
+        try:
+            im = ImageGrab.grab()
+            im.save(filepath, "PNG")
+            captured = True
+        except Exception as e:
+            last_err = e
+
+    if not captured or not filepath.exists():
+        # Surface a clear error so callers (grab, live, watcher) can decide what to do.
+        raise RuntimeError(f"Screen capture failed (tried mss + PIL): {last_err}") from last_err
+
+    # Reliably update the "current.png" live view from the file we just successfully wrote.
+    # Previously this was completely silent on failure, which could make follow grab
+    # and other commands appear to stop producing usable screenshots.
     try:
         shutil.copy2(filepath, CURRENT_PNG)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] Captured fresh screenshot to {filepath}")
+        print(f"       but failed to update {CURRENT_PNG}: {e}")
+        print("       The timestamped file is still valid — you can use it directly.")
 
     try:
         LATEST_TXT.write_text(str(filepath), encoding="utf-8")
+    except Exception:
+        pass
+
+    # Opportunistic garbage collection for the main screenshots directory.
+    # This ensures that *one-shot* usage (--once, follow grab, follow live, bare "live", etc.)
+    # also participates in cleanup. Without a long-running watcher the previous logic
+    # could let screen_*.png pile up indefinitely.
+    #
+    # We use deliberately generous limits here (hours + hundreds of files). The running
+    # watcher will apply its own tighter --max-age/--max-keep policy on its next tick.
+    # Wrapped so a cleanup hiccup can never affect the just-taken screenshot.
+    try:
+        cleanup_old(max_age_seconds=4 * 3600, max_files=300)  # 4 hours or 300 files, very permissive
     except Exception:
         pass
 
@@ -289,10 +339,14 @@ def grab_stable_snapshot(num_recent: int = 20, fresh_capture: bool = True) -> li
     screenshots/grab/ (and grab/recent/).
 
     This is the **recommended command for any AI agent** (Grok, Claude, Cursor, Aider, etc.)
-    to reliably collect visuals. The files in grab/ are not cleaned by the watcher loop.
+    to reliably collect visuals. The watcher loop does not touch grab/ (by design),
+    but grab/ is self-managing: after each new grab we automatically prune old
+    artifacts in grab/recent/ and very old files so the directory cannot grow
+    to infinity even if "follow grab" is called hundreds of times.
 
     - fresh_capture=True (default) ensures the very latest frame is included.
     - Copies current.png + up to num_recent recent frames.
+    - The just-created snapshot is always preserved; only older historical grab files are reaped.
 
     Returns the list of stable absolute paths (read these with your vision tool).
     """
@@ -304,8 +358,10 @@ def grab_stable_snapshot(num_recent: int = 20, fresh_capture: bool = True) -> li
 
     if fresh_capture:
         capture_screenshot()
-        if is_follow_mode():
-            save_recent_frame(CURRENT_PNG)
+        # Always seed the recent ring on an explicit fresh capture (grab/live).
+        # This makes "follow grab" useful for motion context even if no background
+        # --fast watcher is currently running and follow_mode flag is off.
+        save_recent_frame(CURRENT_PNG)
 
     # Stable current view
     if CURRENT_PNG.exists():
@@ -327,6 +383,18 @@ def grab_stable_snapshot(num_recent: int = 20, fresh_capture: bool = True) -> li
             except Exception:
                 pass
 
+    # Self-prune the grab area so it doesn't grow without bound across many
+    # "follow grab" invocations (the main source of "folder balloons to infinity").
+    # We keep a comfortable amount of history for the just-created stable snapshot
+    # while discarding older grab artifacts.
+    try:
+        cleaned = cleanup_grab(max_recent=150, max_age_seconds=172800)  # ~2 days, 150 recent frames
+        if cleaned > 0:
+            # Quietly note it only in non-AI-facing paths; grab output stays clean.
+            pass
+    except Exception:
+        pass
+
     return grabbed
 
 
@@ -346,6 +414,71 @@ def cleanup_recent(max_files: int = 0) -> int:
                 deleted += 1
     except Exception:
         pass
+    return deleted
+
+
+def cleanup_grab(max_recent: int = 150, max_age_seconds: int = 172800) -> int:
+    """Bounded cleanup of the stable grab/ area.
+
+    The grab/ directory is intentionally not rotated by the normal watcher
+    (so the AI has stable files to read). However, repeated "follow grab"
+    calls (common when an AI is actively observing) can cause grab/recent/
+    to accumulate old frames forever because we copy by basename.
+
+    This function is called automatically after each grab_stable_snapshot
+    to keep the stable area from ballooning, while still preserving the
+    just-created snapshot and a generous amount of recent history for it.
+
+    Also prunes very old files from the grab root (except the current one).
+    """
+    deleted = 0
+    try:
+        GRAB_DIR.mkdir(parents=True, exist_ok=True)
+        GRAB_RECENT_DIR.mkdir(parents=True, exist_ok=True)
+
+        now = time.time()
+
+        # 1. Trim grab/recent/ to a bounded number of the newest frames.
+        if GRAB_RECENT_DIR.exists():
+            gframes = sorted(
+                GRAB_RECENT_DIR.glob("frame_*.png"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for old in gframes[max_recent:]:
+                try:
+                    old.unlink(missing_ok=True)
+                    deleted += 1
+                except Exception:
+                    pass
+
+        # 2. Remove very old individual files inside grab/ (but keep the latest current.png).
+        #    This catches historical grab/current.png copies if someone renamed or extra files.
+        current_grab = GRAB_DIR / "current.png"
+        for f in GRAB_DIR.glob("*.png"):
+            if f == current_grab:
+                continue
+            try:
+                if now - f.stat().st_mtime > max_age_seconds:
+                    f.unlink(missing_ok=True)
+                    deleted += 1
+            except Exception:
+                pass
+
+        # 3. Also trim anything left in grab/recent/ that is extremely old.
+        if GRAB_RECENT_DIR.exists():
+            for f in GRAB_RECENT_DIR.glob("frame_*.png"):
+                try:
+                    if now - f.stat().st_mtime > max_age_seconds:
+                        f.unlink(missing_ok=True)
+                        deleted += 1
+                except Exception:
+                    pass
+
+    except Exception:
+        # Never let grab cleanup break the grab operation or the caller.
+        pass
+
     return deleted
 
 
@@ -388,7 +521,16 @@ def watch_loop(interval: float, max_age: int, max_keep: int, follow: bool = Fals
 
     try:
         while True:
-            path = capture_screenshot()
+            try:
+                path = capture_screenshot()
+            except Exception as e:
+                # Do not let one bad capture (transient display glitch, driver hiccup, etc.)
+                # kill the entire watcher session. Log and keep going.
+                print(f"[WARN] Screenshot capture failed: {e}")
+                print("       Will retry on the next interval.")
+                print("       (If this persists, check display settings, drivers, or try without mss.)")
+                time.sleep(effective_interval)
+                continue
 
             if buf_size > 0:
                 save_recent_frame(CURRENT_PNG, buffer_size=buf_size)
@@ -614,15 +756,16 @@ def do_follow_command(args_list: list[str]) -> None:
                     print(p)
                 print(f"\nGrab location (stable): {GRAB_DIR}")
                 print("The AI should now read the paths above (especially grab/current.png + grab/recent/*).")
-                print("These files will stay until the next grab or manual cleanup.")
+                print("Old grab artifacts are automatically pruned over time to prevent unbounded growth.")
+                print("Use 'follow cleanup' for a full manual wipe.")
             else:
                 print("Nothing to grab yet. Make sure a watcher is running (py screen_watcher.py --fast).")
 
     elif cmd in ("live", "observe", "now", "current"):
         # Fresh capture + print live paths (current first). Good for "what am I doing right now?"
         p = capture_screenshot()
-        if is_follow_mode():
-            save_recent_frame(CURRENT_PNG)
+        # Always seed recent ring for explicit live observation commands.
+        save_recent_frame(CURRENT_PNG)
         print(CURRENT_PNG)
         for r in get_recent_frame_paths(5):
             if r.exists():
@@ -632,16 +775,17 @@ def do_follow_command(args_list: list[str]) -> None:
     elif cmd in ("cleanup", "clean"):
         d1 = cleanup_old(0, 0)
         d2 = cleanup_recent(0)
-        # Also offer to clean old grabs
-        grab_cleaned = 0
+        # Use the same bounded grab cleaner that runs automatically after grabs.
+        # The manual full-nuke behavior is still achieved because we also aggressively
+        # delete everything left (for users who really want a total wipe).
+        grab_cleaned = cleanup_grab(max_recent=0, max_age_seconds=0)
+        # Extra pass: ensure truly everything in grab/ is gone for the "clean" command
+        # (the max_recent=0 / age=0 above will have trimmed aggressively).
         try:
             for f in list(GRAB_DIR.glob("**/*")):
                 if f.is_file():
                     f.unlink(missing_ok=True)
                     grab_cleaned += 1
-            if (GRAB_DIR / "recent").exists():
-                for f in (GRAB_DIR / "recent").glob("*"):
-                    f.unlink(missing_ok=True)
         except Exception:
             pass
         print(f"Cleaned {d1 + d2} main files + {grab_cleaned} grab files.")
@@ -668,8 +812,8 @@ def main() -> None:
         if first in ("live", "observe"):
             # Quick real-time observation entry point
             p = capture_screenshot()
-            if is_follow_mode():
-                save_recent_frame(CURRENT_PNG)
+            # Always seed recent ring for explicit live observation.
+            save_recent_frame(CURRENT_PNG)
             print(CURRENT_PNG)  # Primary path for me to read right now
             for r in get_recent_frame_paths(2):
                 if r.exists():
@@ -761,13 +905,12 @@ def main() -> None:
 
     if args.once:
         path = capture_screenshot()
-        do_follow = args.follow or args.fast or args.realtime or is_follow_mode()
-        if do_follow:
-            save_recent_frame(CURRENT_PNG)
+        # --once is an explicit capture; always seed recent so the caller gets motion context
+        # if they later inspect the ring or run follow grab/stream.
+        save_recent_frame(CURRENT_PNG)
         print(f"Captured: {path}")
         print(f"current.png is also ready (always the freshest).")
-        if do_follow:
-            print("Recent frame buffer also updated (use 'py screen_watcher.py follow stream' for motion history).")
+        print("Recent frame buffer also updated (use 'py screen_watcher.py follow stream' or follow grab).")
         print("Tell me: view the screenshot at " + str(path))
         print("     or: view the screenshot at " + str(CURRENT_PNG))
         return
@@ -775,9 +918,8 @@ def main() -> None:
     if args.live:
         # Fresh capture optimized for real-time observation by the AI
         path = capture_screenshot()
-        do_follow = args.follow or args.fast or args.realtime or is_follow_mode()
-        if do_follow:
-            save_recent_frame(CURRENT_PNG)
+        # Explicit live observation → always contribute to recent ring for motion context.
+        save_recent_frame(CURRENT_PNG)
         print(CURRENT_PNG)  # Primary live view — always read this first for "what am I seeing right now"
         for r in get_recent_frame_paths(2):
             if r.exists():
