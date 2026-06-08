@@ -12,6 +12,12 @@ Magic phrases (say to your AI):
 
 While on, the AI can watch mouse gestures, UI state, errors, etc.
 
+**Real-time note-based interaction rules (important):**
+- Give instructions in **only 2 to 3 sentences at a time**.
+- If the user has not written a new question on the screen note, simply repeat your previous 2-3 sentences.
+- Always use `follow grab` (or `--json`) before responding to read the latest on-screen note.
+- This keeps the interaction paced in real time with the user's typing.
+
 Primary recommended flow for any AI:
   1. py screen_watcher.py follow on
   2. py screen_watcher.py --fast          (or --realtime)
@@ -72,14 +78,14 @@ LATEST_TXT = BASE_DIR / "latest_screenshot.txt"
 CURRENT_PNG = SCREENSHOTS_DIR / "current.png"
 LAST_CONTEXT_FILE = BASE_DIR / "last_session_context.txt"
 
-# Follow mode state (so I, Grok, can persistently know if "Follow Mode On" was requested)
+# Follow mode state (so the controlling AI can persistently know if "Follow Mode On" was requested)
 FOLLOW_MODE_FILE = BASE_DIR / "follow_mode.txt"
 FOLLOW_STARTED_FILE = BASE_DIR / "follow_mode_started.txt"  # ISO timestamp when "on" was set
 FOLLOW_TASK_FILE = BASE_DIR / "follow_task_id.txt"   # written by the AI harness when it launches via background tool
 RECENT_DIR = SCREENSHOTS_DIR / "recent"
 RECENT_BUFFER_SIZE = 60   # ~35-60s of recent history at 0.6-1s interval. Much more reliable for AI "following" sequences.
 
-# Stable grab location for AIs (Grok, Claude, etc.) to safely read without race with rotation
+# Stable grab location for AIs (Grok, Claude, Cursor, etc.) to safely read without race with rotation
 GRAB_DIR = SCREENSHOTS_DIR / "grab"
 GRAB_RECENT_DIR = GRAB_DIR / "recent"
 
@@ -244,7 +250,7 @@ def get_latest_path() -> Path | None:
 
 def save_recent_frame(source: Path, buffer_size: int = RECENT_BUFFER_SIZE) -> Path | None:
     """Copy the latest capture into a small rotating 'recent/' ring buffer.
-    This lets me (Grok) read the last several frames in parallel to understand motion
+    This lets the AI read the last several frames in parallel to understand motion
     like you circling something with the mouse.
     """
     ensure_dirs()
@@ -271,7 +277,7 @@ def save_recent_frame(source: Path, buffer_size: int = RECENT_BUFFER_SIZE) -> Pa
 
 def get_recent_frame_paths(limit: int = 6) -> list[Path]:
     """Return the most recent frame paths (newest first) from the ring buffer.
-    For AI agents (Grok, Claude, etc.) to read several frames in parallel for motion/context.
+    For AI agents (Grok, Claude, Cursor, etc.) to read several frames in parallel for motion/context.
     """
     ensure_dirs()
     frames = sorted(RECENT_DIR.glob("frame_*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -671,7 +677,7 @@ def main() -> None:
             return
 
     parser = argparse.ArgumentParser(
-        description="Screen watcher for AI Visual Assistant. Lets Grok see your desktop via temporary screenshots.",
+        description="Screen watcher for AI Visual Assistant. Lets AI assistants (Grok, Claude, etc.) see your desktop via temporary local screenshots.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -767,7 +773,7 @@ def main() -> None:
         return
 
     if args.live:
-        # Fresh capture optimized for real-time observation by me (Grok)
+        # Fresh capture optimized for real-time observation by the AI
         path = capture_screenshot()
         do_follow = args.follow or args.fast or args.realtime or is_follow_mode()
         if do_follow:

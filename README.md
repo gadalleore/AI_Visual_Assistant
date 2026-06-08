@@ -178,6 +178,8 @@ py screen_watcher.py follow status
 
 The `grab` command is the recommended way for any AI to get reliable visuals.
 
+**Real-time note interaction rule:** When you communicate by writing on an on-screen note (sticky note, etc.), the AI should give **only 2-3 sentences at a time**. If no new question appears on the screen, the AI should simply repeat its previous 2-3 sentences until you provide new input. This keeps the interaction paced with your typing. See `FOLLOW_MODE_INSTRUCTIONS.txt` for the full rule the AI is instructed to follow.
+
 Full details (including 1-hour auto-off safety, Claude/other agent support, and the ring buffer) are in `FOLLOW_MODE_INSTRUCTIONS.txt`.
 
 ## Tips for real-time collaboration

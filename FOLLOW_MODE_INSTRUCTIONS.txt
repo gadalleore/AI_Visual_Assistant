@@ -6,6 +6,16 @@ Magic phrases (say these to your AI in chat):
     "Follow Mode On"
     "Follow Mode Off"
 
+**AI Response Rules for Real-Time Note-Based Interaction (Very Important)**
+
+When the user communicates by writing on an on-screen note (sticky note app, etc.):
+
+- Give **only 2 to 3 sentences of instructions or response at a time**.
+- After responding, wait for the user to write a new question or update on the note.
+- If **no new question** has been written on the screen (check frequently with `follow grab`), **repeat your previous 2-3 sentences exactly** until the user provides new input via the note.
+- This keeps the interaction real-time and paced to the user's typing speed on the note.
+- Always run `py screen_watcher.py follow grab` (or `--json`) before every response to read the latest note content.
+
 What "Follow Mode On" does
 --------------------------
 - Sets a persistent flag (follow_mode.txt)
