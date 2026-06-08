@@ -18,41 +18,83 @@ Screenshots are written to your local disk only. You are always in control. Noth
 
 ## Installation
 
+### From source (recommended)
+
 ```bash
 git clone https://github.com/gadalleore/AI_Visual_Assistant.git
 cd AI_Visual_Assistant
-pip install -r requirements.txt
 
-# Recommended for fast/high-frequency capture (mouse following)
+# Modern recommended way (uses pyproject.toml)
+pip install -e .                    # basic editable install
+pip install -e ".[fast]"            # includes the faster mss backend
+
+# Classic / legacy route (uses setup.py)
+python setup.py develop
+
+# Explicit requirements (if you prefer this style)
+pip install -r requirements.txt
+```
+
+**What you get:**
+- The `screen-watcher` console command (if your Python Scripts folder is on PATH)
+- `import screen_watcher` works
+- All three packaging options are provided so users can choose what they prefer
+
+### One-off usage (no installation at all)
+
+```powershell
+py -m pip install -r requirements.txt
+py screen_watcher.py --fast
+```
+
+### Packaging files (we provide all three for maximum flexibility)
+
+- `pyproject.toml` — modern standard (PEP 621). This is the preferred file for new installs, dependency declaration, and the `screen-watcher` entry point.
+- `setup.py` — thin backwards-compatible shim. Lets `python setup.py develop`, very old tools, and `pip install -e .` continue to work.
+- `requirements.txt` — kept because some people like explicit, copy-paste friendly lists.
+
+After any of the install methods above you can run:
+
+```powershell
+screen-watcher --help
+# or, if the command isn't in PATH yet:
+py -m screen_watcher --help
+```
+
+### For maximum speed (mouse following / real-time)
+
+The optional `mss` backend is ~5× faster than pure PIL for repeated captures:
+
+```bash
+pip install "ai-visual-assistant[fast]"
+# or manually
 pip install mss
 ```
 
-See `requirements.txt` for details. mss is ~5x faster than the PIL fallback.
+Use `--fast` or `--realtime` flags (or the `follow grab` command when working with an AI).
 
 ## How it works (the important part)
 
 1. **You** decide when I can see your screen. Run the watcher only when you want the capability.
 2. The script saves screenshots locally as PNG files with timestamps.
 3. You tell me the path (or "look at my screen" + paste the path).
-4. I read the image directly from your disk using my tools (`read_file` on the PNG).
-5. After we're done, the file gets deleted (automatically after a few minutes, or manually).
+4. The AI reads the image directly from your disk using its vision tools (e.g. `read_file` on the PNG).
+5. After you're done, the file gets deleted (automatically after a few minutes, or manually).
 
-**Nothing is uploaded anywhere.** The images stay on your machine until deleted. I only "see" them when you explicitly give me the path in this chat.
+**Nothing is uploaded anywhere.** The images stay on your machine until deleted. The AI only "sees" them when you explicitly give it the path.
 
-## Quick start
+## Quick start (after installation)
 
 ```powershell
-# One-time setup
-cd path\to\AI_Visual_Assistant
-py -m pip install -r requirements.txt
-
 # Basic watcher
-py screen_watcher.py
-
-# Recommended for live Follow Mode (mouse circling, gestures)
-py screen_watcher.py --fast
+screen-watcher
 # or
-py screen_watcher.py --realtime
+py -m screen_watcher
+
+# Recommended for live Follow Mode (mouse circling, gestures, real-time observation)
+screen-watcher --fast
+# or
+screen-watcher --realtime
 ```
 
 While it's running you will see output like:
@@ -73,7 +115,7 @@ or (always the newest):
 
 (The watcher keeps `current.png` updated to the latest shot every time.)
 
-I will use my tools to load and describe exactly what is on the screen, then we can talk about it.
+The AI will use its vision tools to load and describe exactly what is on the screen, then you can talk about it.
 
 Stop the watcher anytime with **Ctrl+C**.
 
