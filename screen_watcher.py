@@ -18,11 +18,17 @@ While on, the AI can watch mouse gestures, UI state, errors, etc.
 - Always use `follow grab` (or `--json`) before responding to read the latest on-screen note.
 - This keeps the interaction paced in real time with the user's typing.
 
-Primary recommended flow for any AI:
+Primary recommended flow for any AI (watcher-free, burst-based):
   1. py screen_watcher.py follow on
-  2. py screen_watcher.py --fast          (or --realtime)
-  3. (later, when you want the AI to look)  py screen_watcher.py follow grab
-  4. AI reads the printed stable paths with its vision tool (current.png + recent frames)
+  2. (whenever the AI wants to look)  py screen_watcher.py follow grab
+       → fires a BURST of fresh frames (default 5, ~2s) into screenshots/grab/
+  3. AI reads grab/current.png (freshest) + the burst frames with its vision tool
+
+No continuous background capture is required: each `follow grab` takes its own
+fresh frames on demand. This is safer (nothing is capturing the screen between
+prompts) and self-contained. A continuous watcher (--fast/--realtime) is still
+available for fine real-time motion following, but is no longer needed for the
+normal "look at where I am now" loop.
 
 Safety: Follow mode **automatically turns itself off after 60 minutes** of continuous use.
 You can always turn it back on.
@@ -50,16 +56,17 @@ See: py screen_watcher.py follow instructions   (or read FOLLOW_MODE_INSTRUCTION
 === Why "grab" exists ===
 The rotating recent/ ring buffer is great for low disk use, but frames can disappear
 between an AI listing paths and actually reading the images.
-`follow grab` copies the current state into a stable `grab/` directory (the background
-watcher does not clean it). Grab is self-managing: it automatically prunes old artifacts
-on each new grab so the folder stays bounded even with heavy use.
+`follow grab` takes a fresh BURST of frames (default 5) and copies them into a stable
+`grab/` directory (the background watcher does not clean it). Grab is self-managing: it
+automatically prunes old artifacts on each new grab so the folder stays bounded even with
+heavy use. Because grab captures its own fresh frames, it works with no watcher running.
 
 Privacy: Only use when comfortable. Everything is local and short-lived by default.
 """
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import argparse
 import shutil
@@ -92,6 +99,14 @@ FOLLOW_STARTED_FILE = BASE_DIR / "follow_mode_started.txt"  # ISO timestamp when
 FOLLOW_TASK_FILE = BASE_DIR / "follow_task_id.txt"   # written by the AI harness when it launches via background tool
 RECENT_DIR = SCREENSHOTS_DIR / "recent"
 RECENT_BUFFER_SIZE = 60   # ~35-60s of recent history at 0.6-1s interval. Much more reliable for AI "following" sequences.
+
+# Burst capture (the modern, watcher-free way for an AI to look).
+# A single `follow grab` fires a short burst of fresh frames so the AI sees the
+# CURRENT screen (plus a couple seconds of motion) without any background process
+# continuously capturing the desktop. Safer (nothing runs between prompts) and
+# self-contained (no dependency on a --fast/--realtime watcher being alive).
+BURST_DEFAULT_COUNT = 5      # frames per grab
+BURST_DEFAULT_INTERVAL = 0.5 # seconds between burst frames (~2s total for 5)
 
 # Stable grab location for AIs (Grok, Claude, Cursor, etc.) to safely read without race with rotation
 GRAB_DIR = SCREENSHOTS_DIR / "grab"
@@ -325,6 +340,33 @@ def save_recent_frame(source: Path, buffer_size: int = RECENT_BUFFER_SIZE) -> Pa
     return dest
 
 
+def capture_burst(count: int = BURST_DEFAULT_COUNT,
+                  interval: float = BURST_DEFAULT_INTERVAL) -> list[Path]:
+    """Capture `count` fresh screenshots spaced `interval` seconds apart.
+
+    This is the engine behind the watcher-free `follow grab`: instead of relying
+    on a continuously running background watcher to keep the recent/ ring warm,
+    we take a few fresh frames on demand. Each frame updates current.png and is
+    pushed into the recent ring so grab_stable_snapshot can pin them.
+
+    Resilient: a single failed frame is skipped (with a warning) rather than
+    aborting the whole burst. Returns the captured frame paths (oldest first).
+    """
+    count = max(1, count)
+    frames: list[Path] = []
+    for i in range(count):
+        try:
+            capture_screenshot()
+            f = save_recent_frame(CURRENT_PNG)
+            if f:
+                frames.append(f)
+        except Exception as e:
+            print(f"[WARN] burst frame {i + 1}/{count} failed: {e}")
+        if i < count - 1:
+            time.sleep(max(0.0, interval))
+    return frames
+
+
 def get_recent_frame_paths(limit: int = 6) -> list[Path]:
     """Return the most recent frame paths (newest first) from the ring buffer.
     For AI agents (Grok, Claude, Cursor, etc.) to read several frames in parallel for motion/context.
@@ -334,7 +376,8 @@ def get_recent_frame_paths(limit: int = 6) -> list[Path]:
     return frames[:limit]
 
 
-def grab_stable_snapshot(num_recent: int = 20, fresh_capture: bool = True) -> list[Path]:
+def grab_stable_snapshot(num_recent: int = 20, fresh_capture: bool = True,
+                         burst: int = 1, burst_interval: float = BURST_DEFAULT_INTERVAL) -> list[Path]:
     """Create a *stable*, non-rotating snapshot of the current screen state into
     screenshots/grab/ (and grab/recent/).
 
@@ -355,13 +398,27 @@ def grab_stable_snapshot(num_recent: int = 20, fresh_capture: bool = True) -> li
     GRAB_RECENT_DIR.mkdir(parents=True, exist_ok=True)
 
     grabbed: list[Path] = []
+    burst_frames: list[Path] = []
 
     if fresh_capture:
-        capture_screenshot()
-        # Always seed the recent ring on an explicit fresh capture (grab/live).
-        # This makes "follow grab" useful for motion context even if no background
-        # --fast watcher is currently running and follow_mode flag is off.
-        save_recent_frame(CURRENT_PNG)
+        if burst and burst > 1:
+            # Watcher-free burst: take several fresh frames on demand so the AI
+            # sees the current screen (plus ~2s of motion) without a continuous
+            # background capture process running between prompts.
+            burst_frames = capture_burst(count=burst, interval=burst_interval)
+            # Start this grab's recent area clean so it holds ONLY this burst -
+            # no stale frames from earlier grabs to confuse the AI about "now".
+            try:
+                for old in GRAB_RECENT_DIR.glob("frame_*.png"):
+                    old.unlink(missing_ok=True)
+            except Exception:
+                pass
+        else:
+            capture_screenshot()
+            # Always seed the recent ring on an explicit fresh capture (grab/live).
+            # This makes "follow grab" useful for motion context even if no background
+            # --fast watcher is currently running and follow_mode flag is off.
+            save_recent_frame(CURRENT_PNG)
 
     # Stable current view
     if CURRENT_PNG.exists():
@@ -372,8 +429,12 @@ def grab_stable_snapshot(num_recent: int = 20, fresh_capture: bool = True) -> li
         except Exception:
             pass
 
-    # Copy generous recent history into stable location
-    recent = get_recent_frame_paths(num_recent)
+    # Copy recent history into the stable location. For a burst grab, pin exactly
+    # this burst's fresh frames (newest first); otherwise fall back to the ring.
+    if burst_frames:
+        recent = sorted(burst_frames, key=lambda p: p.stat().st_mtime, reverse=True)
+    else:
+        recent = get_recent_frame_paths(num_recent)
     for src in recent:
         if src.exists():
             dst = GRAB_RECENT_DIR / src.name
@@ -737,29 +798,40 @@ def do_follow_command(args_list: list[str]) -> None:
             else:
                 print("(Note: these are live ring-buffer paths. For reliable AI reading use `follow grab` instead.)")
 
-    elif cmd in ("grab", "snapshot", "collect", "pin", "freeze", "view"):
+    elif cmd in ("grab", "snapshot", "collect", "pin", "freeze", "view", "burst"):
         # THE recommended command for any AI agent.
-        # Creates stable copies in screenshots/grab/ that will not be deleted while the AI reads them.
-        paths = grab_stable_snapshot(num_recent=25, fresh_capture=True)
+        # Fires a short BURST of fresh frames (default 5) into the stable
+        # screenshots/grab/ area, so the AI sees the CURRENT screen reliably with
+        # NO continuous background watcher running. Optional numeric override:
+        #   follow grab 3   → burst of 3 frames
+        count = BURST_DEFAULT_COUNT
+        for a in clean_args[1:]:
+            if a.isdigit():
+                count = max(1, int(a))
+                break
+        paths = grab_stable_snapshot(num_recent=max(25, count + 2), fresh_capture=True,
+                                     burst=count, burst_interval=BURST_DEFAULT_INTERVAL)
         if as_json:
             import json
             print(json.dumps({
                 "mode": "grab",
+                "burst_frames": count,
                 "grab_dir": str(GRAB_DIR),
+                "current": str(GRAB_DIR / "current.png"),
                 "stable_paths": [str(p) for p in paths],
-                "instructions": "Read these paths with your vision/file tool. They are safe from rotation."
+                "instructions": "Read grab/current.png first (freshest). The other paths are burst frames for motion context. All are safe from rotation."
             }, indent=2))
         else:
             if paths:
-                print("=== STABLE GRAB (safe for AI vision) ===")
+                print(f"=== STABLE GRAB ({count}-frame burst, safe for AI vision) ===")
                 for p in paths:
                     print(p)
                 print(f"\nGrab location (stable): {GRAB_DIR}")
-                print("The AI should now read the paths above (especially grab/current.png + grab/recent/*).")
+                print("Read grab/current.png first (freshest); the burst frames give ~2s of motion context.")
                 print("Old grab artifacts are automatically pruned over time to prevent unbounded growth.")
                 print("Use 'follow cleanup' for a full manual wipe.")
             else:
-                print("Nothing to grab yet. Make sure a watcher is running (py screen_watcher.py --fast).")
+                print("Nothing to grab — screen capture failed. Check display/drivers (see [WARN] lines above).")
 
     elif cmd in ("live", "observe", "now", "current"):
         # Fresh capture + print live paths (current first). Good for "what am I doing right now?"

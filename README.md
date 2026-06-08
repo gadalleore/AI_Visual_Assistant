@@ -10,6 +10,7 @@ Screenshots are written to your local disk only. You are always in control. Noth
 ## Features
 
 - **Follow Mode** for real-time visual collaboration (mouse gestures, UI state, debugging, etc.)
+- **Watcher-free burst grab**: a single `follow grab` fires a short burst of fresh frames (default 5, ~2s) on demand — no continuous background capture needed
 - Stable `follow grab` snapshots so AIs can reliably read images without race conditions with rotation
 - Grab area is self-pruning — repeated grabs will not cause unbounded growth
 - 1-hour automatic safety timeout for Follow Mode
@@ -130,7 +131,8 @@ py screen_watcher.py --open-dir      # open the screenshots folder
 py screen_watcher.py --cleanup       # manual cleanup
 py screen_watcher.py follow status
 py screen_watcher.py follow stream   # print current + recent paths for the AI
-py screen_watcher.py follow grab     # BEST: create stable (self-pruning) snapshot for AI
+py screen_watcher.py follow grab     # BEST: burst of 5 fresh frames -> stable snapshot for AI
+py screen_watcher.py follow grab 3   # same, but override the burst count
 py screen_watcher.py follow instructions
 ```
 
@@ -177,13 +179,17 @@ py screen_watcher.py follow instructions
 **Key commands when you tell your AI "Follow Mode On"**:
 
 ```powershell
-py screen_watcher.py --fast            # or --realtime
-py screen_watcher.py follow grab       # create stable snapshot for the AI to read
+py screen_watcher.py follow grab       # burst of 5 fresh frames -> stable snapshot
 py screen_watcher.py follow grab --json
+py screen_watcher.py follow grab 3     # override burst count
 py screen_watcher.py follow status
+py screen_watcher.py --fast            # OPTIONAL: continuous watcher for fine motion following
 ```
 
-The `grab` command is the recommended way for any AI to get reliable visuals.
+The `grab` command is the recommended way for any AI to get reliable visuals. It now
+captures its own fresh burst on each call, so **no continuous watcher is required** for the
+normal "look at where I am now" loop — start `--fast`/`--realtime` only if you specifically
+want continuous real-time motion following.
 
 **Real-time note interaction rule:** When you communicate by writing on an on-screen note (sticky note, etc.), the AI should give **only 2-3 sentences at a time**. If no new question appears on the screen, the AI should simply repeat its previous 2-3 sentences until you provide new input. This keeps the interaction paced with your typing. See `FOLLOW_MODE_INSTRUCTIONS.txt` for the full rule the AI is instructed to follow.
 

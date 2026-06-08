@@ -16,6 +16,12 @@ When the user communicates by writing on an on-screen note (sticky note app, etc
 - This keeps the interaction real-time and paced to the user's typing speed on the note.
 - Always run `py screen_watcher.py follow grab` (or `--json`) before every response to read the latest note content.
 
+NOTE (burst mode): `follow grab` now takes a fresh BURST of frames (default 5, ~2 seconds)
+each time it is called. You do NOT need a continuous background watcher running anymore -
+every grab captures its own fresh frames on demand. This is the intended loop: the user
+says "Follow Mode On" once, then the AI runs `follow grab` each turn to see the current
+screen. Override the count with e.g. `follow grab 3`.
+
 What "Follow Mode On" does
 --------------------------
 - Sets a persistent flag (follow_mode.txt)
@@ -35,39 +41,41 @@ Follow Mode will **automatically turn itself off after 60 minutes** of continuou
 This prevents accidentally leaving it running for a very long time. If it auto-disables,
 you (or the AI) can simply say "Follow Mode On" again.
 
-How to start the watcher (do this after saying Follow Mode On)
---------------------------------------------------------------
-In PowerShell, from the project folder:
+Do you need to start a background watcher?  (Usually: NO)
+--------------------------------------------------------
+Burst-based `follow grab` is now self-contained - it captures its own fresh frames
+on demand, so you do NOT need a continuously running watcher for the normal
+"look at where I am now" loop. Just say "Follow Mode On" and let the AI run
+`follow grab` each turn.
 
-    py screen_watcher.py --fast
-    # or for the tightest following:
-    py screen_watcher.py --realtime
+A continuous watcher is still available for fine real-time motion following
+(watching you drag/circle the mouse). Only start it if you want that:
 
-These presets now use:
-- Faster capture (~0.4–0.65s)
-- Much larger recent buffer (60 frames by default)
-- Longer history retention (5 minutes) so the AI has more context to work with
+    py screen_watcher.py --fast       # ~0.65s interval, large recent buffer
+    py screen_watcher.py --realtime   # ~0.4s, tightest following
 
 The BEST command for any AI to actually look (Grok or Claude)
 -------------------------------------------------------------
-    py screen_watcher.py follow grab
+    py screen_watcher.py follow grab          # burst of 5 fresh frames (default)
+    py screen_watcher.py follow grab 3        # burst of 3 (override the count)
 
-This is the key improvement:
+This is the key primitive:
 
-- It does a fresh capture.
-- It copies current.png + a generous number of recent frames into a **stable** location:
-    screenshots/grab/current.png
-    screenshots/grab/recent/frame_*.png
-- These files are **not** rotated or deleted by the normal watcher cleanup.
-- The command prints the exact list of paths.
+- It fires a fresh BURST of frames (default 5, spaced ~0.5s = ~2s of motion).
+- No background watcher required - the burst captures the frames itself.
+- It copies current.png + exactly that burst into a **stable** location:
+    screenshots/grab/current.png            (freshest - read this first)
+    screenshots/grab/recent/frame_*.png     (the burst, newest first)
+- These files are **not** rotated or deleted while the AI reads them.
+- The command prints the exact list of paths (add --json for machine-readable).
 - The AI then calls its vision / read_file tool on those stable paths.
 
-This completely solves the previous problem where frames could disappear between the AI
-asking for the list and actually reading the images.
+This solves the old problem where frames could disappear between the AI asking for
+the list and reading them - AND removes the dependency on a watcher being alive.
 
 Recommended AI usage pattern (works for both Grok and Claude):
   AI runs:  py screen_watcher.py follow grab
-  AI then reads the printed paths (especially grab/current.png and several from grab/recent/)
+  AI reads grab/current.png first (freshest), then a couple burst frames if motion matters.
   AI describes exactly what is on screen + any recent motion.
 
 You can also pass --json:
@@ -93,12 +101,16 @@ Convenience / agent commands
 
 How the AI actually "watches"
 -----------------------------
-1. You (or the AI) start the watcher with --fast or --realtime while Follow Mode is on.
+1. You say "Follow Mode On" (sets the persistent flag). No watcher needed.
 2. When you want the AI to look at your screen (or the AI decides to look), the AI runs:
        py screen_watcher.py follow grab
+   This fires a fresh burst of 5 frames on the spot.
 3. The AI receives a list of stable local PNG paths.
 4. The AI calls its vision tool (read_file, etc.) on those paths — multiple in parallel if desired.
 5. The AI now has pixel-perfect understanding of your current desktop + recent motion.
+
+(Optional: if you want continuous fine-grained motion following, also start a
+ --fast/--realtime watcher in a terminal. Not required for normal use.)
 
 Nothing is ever uploaded to the cloud. Everything stays on your machine.
 
@@ -137,12 +149,14 @@ Any agent that can:
 Recommended contract for Claude / Cursor / etc.:
 
 1. User (or agent) says "Follow Mode On"
-2. Agent runs: py screen_watcher.py --fast   (or --realtime)
-3. When the agent wants to see the screen:
-       py screen_watcher.py follow grab --json     # or without --json
-4. Agent parses the output (or just takes the printed paths)
-5. Agent reads the stable grab/ paths with its file/vision tool
-6. Agent answers with full visual context
+2. When the agent wants to see the screen:
+       py screen_watcher.py follow grab --json     # or without --json (burst of 5)
+3. Agent parses the output (or just takes the printed paths)
+4. Agent reads grab/current.png first, then burst frames as needed, with its vision tool
+5. Agent answers with full visual context
+
+(No `--fast` step required - the burst grab captures its own fresh frames.
+ Start a watcher only if you want continuous real-time motion following.)
 
 The `grab` command + stable `screenshots/grab/` directory is the reliable primitive
 that works across different AI tool ecosystems.
